@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 nom = "8.0.0"
+num-derive = "0.4.2"
+num-traits = "0.2.19"
