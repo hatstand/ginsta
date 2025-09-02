@@ -4,6 +4,7 @@ use std::{
 };
 
 use log::debug;
+use memmap::MmapOptions;
 use nom::{
     bytes::{complete::tag, take},
     character::complete::one_of,
@@ -228,61 +229,52 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
     Ok((rest, GpsFrame { records: records.0 }))
 }
 
+/*
+* Layout:
+* |....{Metadata:[Frame{FrameTrailer}]}Trailer{MetadataPosition}|
+*
+*/
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     let file_names = args().skip(1);
     let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
     for file_name in file_names {
-        let mut file = std::fs::File::open(file_name).expect("Failed to open file");
-        file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1))
-            .expect("Failed to seek");
+        let file = std::fs::File::open(file_name).expect("Failed to open file");
+        let mmap = unsafe { MmapOptions::new().map(&file)? };
 
-        let mut buffer = [0; HEADER_SIZE as usize];
-        let res = file.read(&mut buffer).expect("Failed to read");
-        assert_eq!(res as i64, HEADER_SIZE);
-
-        assert_eq!(file.metadata()?.len(), file.stream_position()?);
+        let buffer = &mmap[(mmap.len() - HEADER_SIZE as usize)..];
+        assert_eq!(buffer.len() as i64, HEADER_SIZE);
 
         let (_, header) = header_parser(&buffer).expect("Failed to parse header");
         debug!("{:?}", header);
 
-        let metadata_pos = file.metadata()?.len() as u64 - header.metadata_size as u64;
+        let metadata_pos = mmap.len() as u64 - header.metadata_size as u64;
 
         // Read frames one at a time backwards from just before the header/trailer.
-        file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1 + FRAME_HEADER_SIZE))
-            .expect("Failed to seek");
+        let frames_end = mmap.len() - HEADER_SIZE as usize + FRAME_HEADER_SIZE as usize;
+        let last_frame_trailer_start = frames_end - FRAME_HEADER_SIZE as usize;
+        let frame_trailer_buf = &mmap[last_frame_trailer_start..frames_end];
+        assert_eq!(frame_trailer_buf.len() as i64, FRAME_HEADER_SIZE);
 
-        // POSITION: just after the last frame.
-
-        file.seek_relative(FRAME_HEADER_SIZE * -1)?;
-        // POSITION: just before the frame's header/trailer.
-
-        // Read frame header.
-        let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
-        file.read_exact(&mut frame_header_buf)
-            .expect("Failed to read frame header");
-        // POSITION: just after the frame.
+        // Read frame trailer.
         let (_, frame_trailer) =
-            frame_trailer(&frame_header_buf).expect("Failed to parse frame header");
+            frame_trailer(&frame_trailer_buf).expect("Failed to parse frame trailer");
         assert_eq!(frame_trailer.frame_type, FrameType::Index);
-        file.seek_relative(((frame_trailer.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
         debug!("{:?}", frame_trailer);
 
-        // POSITION: just before the frame's data.
-        let frame_buf = &mut vec![0; frame_trailer.frame_size as usize];
-        file.read_exact(frame_buf)?;
+        let last_frame_start = last_frame_trailer_start - frame_trailer.frame_size as usize;
+        let frame_buf = &mmap[last_frame_start..last_frame_trailer_start];
 
         let (_, index_frame) = parse_index_frame(frame_buf).expect("Failed to parse index frame");
+        debug!("{:?}", index_frame);
 
         for frame in index_frame.frames {
             match frame.frame_type {
                 FrameType::Gps => {
-                    let file_offset = metadata_pos + frame.frame_offset as u64;
-                    file.seek(std::io::SeekFrom::Start(file_offset))?;
-
-                    let gps_frame_buf = &mut vec![0; frame.frame_size as usize];
-                    file.read_exact(gps_frame_buf)?;
+                    let file_offset = (metadata_pos + frame.frame_offset as u64) as usize;
+                    let gps_frame_buf = &mmap[file_offset..file_offset + frame.frame_size as usize];
 
                     let (_, gps_frame) =
                         parse_gps_frame(gps_frame_buf).expect("Failed to parse GPS frame");
