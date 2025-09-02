@@ -1,5 +1,6 @@
 use std::{env::args, io::Read};
 
+use log::debug;
 use nom::{
     IResult, Parser,
     bytes::take,
@@ -77,17 +78,35 @@ fn parse_gps_records(frame: &[u8]) -> IResult<&[u8], Vec<GpsRecord>> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    let file_name = args().nth(1).expect("No file name given");
-
-    let mut file = std::fs::File::open(file_name).expect("Failed to open file");
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).expect("Failed to read file");
-
-    let (_, gps_records) = parse_gps_records(&buffer).expect("Failed to parse GPS record");
+    let file_names = args().skip(1);
 
     let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
-    gps_records.iter().for_each(|record| {
-        csv_writer.serialize(record).expect("Failed to write CSV");
+
+    file_names.for_each(|file_name| {
+        debug!("Processing file: {}", file_name);
+        let mut file = std::fs::File::open(file_name).expect("Failed to open file");
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).expect("Failed to read file");
+        // Pop off any rogue newlines.
+        while let last = buffer.last()
+            && (last == Some(&b'\n') || last == Some(&b'\r'))
+        {
+            buffer.pop();
+        }
+
+        assert_eq!(
+            buffer.len() % 53,
+            0,
+            "length actually {} {}",
+            buffer.len(),
+            buffer.last().unwrap()
+        );
+
+        let (_, gps_records) = parse_gps_records(&buffer).expect("Failed to parse GPS record");
+
+        gps_records.iter().for_each(|record| {
+            csv_writer.serialize(record).expect("Failed to write CSV");
+        });
     });
 
     Ok(())
