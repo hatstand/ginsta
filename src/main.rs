@@ -3,21 +3,20 @@ use std::{
     io::{Read, Seek},
 };
 
-use log::{Level, debug, error, info, log_enabled};
+use log::debug;
 use nom::{
-    IResult, Parser,
     bytes::{complete::tag, take},
     character::complete::one_of,
     combinator::eof,
     multi::{count, many_till},
-    number::{le_f64, le_i32, le_u8, le_u16, le_u32, le_u64},
+    number::{le_f64, le_i32, le_u16, le_u32, le_u64},
+    IResult, Parser,
 };
-use num_derive::FromPrimitive;
+use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use serde::Serialize;
 
 const HEADER_SIZE: i64 = 78;
-const SIGNATURE_SIZE: i64 = 32;
 
 const SIGNATURE: &[u8] = &[
     0x38, 0x64, 0x62, 0x34, 0x32, 0x64, 0x36, 0x39, 0x34, 0x63, 0x63, 0x63, 0x34, 0x31, 0x38, 0x37,
@@ -65,7 +64,7 @@ fn header_parser(header: &[u8]) -> IResult<&[u8], Trailer> {
 const FRAME_HEADER_SIZE: i64 = 6;
 
 #[repr(i8)]
-#[derive(FromPrimitive, Debug, PartialEq)]
+#[derive(FromPrimitive, ToPrimitive, Debug, PartialEq)]
 enum FrameType {
     Raw = -1,
     Index = 0,
@@ -102,13 +101,6 @@ struct FrameTrailer {
     frame_size: i32,
 }
 
-const INDEX_FRAME_HEADER_SIZE: i32 = 10;
-
-#[derive(Debug)]
-enum Frame {
-    Index(IndexFrame),
-}
-
 fn frame_trailer(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
     let mut parser = (take(1usize), take(1usize), le_i32());
     let (rest, (frame_ver, frame_type_code, frame_size)) = parser.parse(frame)?;
@@ -142,10 +134,9 @@ struct IndexFrameTrailer {
 }
 
 fn parse_index(input: &[u8]) -> IResult<&[u8], IndexFrameTrailer> {
-    let (rest, frame_type) = take(1 as usize).parse(input)?;
-    let (rest, version) = take(1 as usize).parse(rest)?;
-    let (rest, size) = le_u32().parse(rest)?;
-    let (rest, offset) = le_u32().parse(rest)?;
+    let mut parser = (take(1usize), take(1usize), le_u32(), le_u32());
+    let (rest, (frame_type, version, size, offset)) = parser.parse(input)?;
+
     Ok((
         rest,
         IndexFrameTrailer {
@@ -190,19 +181,21 @@ fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
     let track = le_f64();
     let altitude = le_f64();
 
+    let mut parser = (
+        timestamp,
+        take(3usize),
+        latitude,
+        northsouth,
+        longitude,
+        eastwest,
+        speed,
+        track,
+        altitude,
+    );
+
     let (rest, (timestamp, _, latitude, northsouth, longitude, eastwest, speed, track, altitude)) =
-        (
-            timestamp,
-            take(3usize), // Unknown fields.
-            latitude,
-            northsouth,
-            longitude,
-            eastwest,
-            speed,
-            track,
-            altitude,
-        )
-            .parse(frame)?;
+        parser.parse(frame)?;
+
     Ok((
         rest,
         GpsRecord {
