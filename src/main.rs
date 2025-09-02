@@ -6,6 +6,7 @@ use std::{
 use nom::{
     IResult, Parser,
     bytes::{complete::tag, take},
+    character::complete::one_of,
     combinator::eof,
     multi::{count, many_till},
     number::{le_f64, le_i32, le_u8, le_u16, le_u32, le_u64},
@@ -181,25 +182,40 @@ struct GpsRecord {
     altitude: f64,
 }
 
+const NS: &[u8] = &[b'N', b'S'];
+const EW: &[u8] = &[b'E', b'W'];
+
 fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
-    let (rest, timestamp) = le_u64().parse(frame)?;
-    let (rest, _) = le_u16().parse(rest)?;
-    let (rest, _) = take(1usize).parse(rest)?;
-    let (rest, latitude) = le_f64().parse(rest)?;
-    let (rest, latitude_ns) = le_u8().parse(rest)?;
-    let (rest, longitude) = le_f64().parse(rest)?;
-    let (rest, longitude_ew) = le_u8().parse(rest)?;
-    let (rest, speed) = le_f64().parse(rest)?;
-    let (rest, track) = le_f64().parse(rest)?;
-    let (rest, altitude) = le_f64().parse(rest)?;
+    let timestamp = le_u64();
+    let latitude = le_f64();
+    let northsouth = one_of(NS);
+    let longitude = le_f64();
+    let eastwest = one_of(EW);
+    let speed = le_f64();
+    let track = le_f64();
+    let altitude = le_f64();
+
+    let (rest, (timestamp, _, latitude, northsouth, longitude, eastwest, speed, track, altitude)) =
+        (
+            timestamp,
+            take(3usize), // Unknown fields.
+            latitude,
+            northsouth,
+            longitude,
+            eastwest,
+            speed,
+            track,
+            altitude,
+        )
+            .parse(frame)?;
     Ok((
         rest,
         GpsRecord {
             timestamp,
             latitude,
-            northsouth: latitude_ns as char,
+            northsouth,
             longitude,
-            eastwest: longitude_ew as char,
+            eastwest,
             speed,
             track,
             altitude,
