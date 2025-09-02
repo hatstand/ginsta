@@ -3,7 +3,7 @@ use std::{env::args, io::Read};
 
 use nom::{
     IResult, Parser,
-    bytes::take,
+    bytes::{tag, take},
     character::one_of,
     combinator::eof,
     multi::many_till,
@@ -15,6 +15,9 @@ struct GpsRecord {
     timestamp: u64,
     latitude: f64,
     longitude: f64,
+    speed: f64,
+    track: f64,
+    altitude: f64,
 }
 
 const NS: &[u8] = &[b'N', b'S'];
@@ -27,6 +30,10 @@ fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
     let longitude = le_f64();
     let eastwest = one_of(EW);
 
+    let speed = le_f64();
+    let track = le_f64();
+    let altitude = le_f64();
+
     let mut parser = (
         timestamp,
         take(7usize),
@@ -34,18 +41,31 @@ fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
         northsouth,
         longitude,
         eastwest,
-        take(24usize),
+        speed,
+        track,
+        altitude,
     );
 
-    let (rest, (timestamp, _, latitude, northsouth, longitude, eastwest, _)) =
+    let (rest, (timestamp, _, latitude, northsouth, longitude, eastwest, speed, track, altitude)) =
         parser.parse(frame)?;
 
     Ok((
         rest,
         GpsRecord {
             timestamp: timestamp as u64,
-            latitude,
-            longitude,
+            latitude: if northsouth == 'S' {
+                -latitude
+            } else {
+                latitude
+            },
+            longitude: if eastwest == 'W' {
+                -longitude
+            } else {
+                longitude
+            },
+            speed,
+            track,
+            altitude,
         },
     ))
 }
