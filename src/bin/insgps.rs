@@ -1,23 +1,23 @@
-use core::time;
 use std::{env::args, io::Read};
 
 use nom::{
     IResult, Parser,
-    bytes::{tag, take},
+    bytes::take,
     character::one_of,
     combinator::eof,
     multi::many_till,
-    number::{le_f64, le_i32, le_u16, le_u32, le_u64},
+    number::{le_f64, le_u32},
 };
+use serde::Serialize;
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct GpsRecord {
-    timestamp: u64,
+    timestamp: u64, // Seconds.
     latitude: f64,
     longitude: f64,
-    speed: f64,
+    speed: f64, // Probably metres / second.
     track: f64,
-    altitude: f64,
+    altitude: f64, // Probably metres.
 }
 
 const NS: &[u8] = &[b'N', b'S'];
@@ -36,7 +36,7 @@ fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
 
     let mut parser = (
         timestamp,
-        take(7usize),
+        take(7usize), // Slope maybe?
         latitude,
         northsouth,
         longitude,
@@ -76,7 +76,6 @@ fn parse_gps_records(frame: &[u8]) -> IResult<&[u8], Vec<GpsRecord>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Hello, world!");
     env_logger::init();
     let file_name = args().nth(1).expect("No file name given");
 
@@ -84,9 +83,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer).expect("Failed to read file");
 
-    let (_, gps_record) = parse_gps_records(&buffer).expect("Failed to parse GPS record");
+    let (_, gps_records) = parse_gps_records(&buffer).expect("Failed to parse GPS record");
 
-    println!("{:?}", gps_record);
+    let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
+    gps_records.iter().for_each(|record| {
+        csv_writer.serialize(record).expect("Failed to write CSV");
+    });
 
     Ok(())
 }
