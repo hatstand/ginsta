@@ -176,6 +176,9 @@ struct GpsFrame {
     northsouth: char,
     longitude: f64,
     eastwest: char,
+    speed: f64,
+    track: f64,
+    altitude: f64,
 }
 
 fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
@@ -186,6 +189,9 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
     let (rest, latitude_ns) = le_u8().parse(rest)?;
     let (rest, longitude) = le_f64().parse(rest)?;
     let (rest, longitude_ew) = le_u8().parse(rest)?;
+    let (rest, speed) = le_f64().parse(rest)?;
+    let (rest, track) = le_f64().parse(rest)?;
+    let (rest, altitude) = le_f64().parse(rest)?;
     Ok((
         rest,
         GpsFrame {
@@ -194,6 +200,9 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
             northsouth: latitude_ns as char,
             longitude,
             eastwest: longitude_ew as char,
+            speed,
+            track,
+            altitude,
         },
     ))
 }
