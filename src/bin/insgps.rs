@@ -2,12 +2,12 @@ use std::{env::args, io::Read};
 
 use log::debug;
 use nom::{
-    IResult, Parser,
     bytes::take,
     character::one_of,
     combinator::eof,
     multi::many_till,
     number::{le_f64, le_u32},
+    IResult, Parser,
 };
 use serde::Serialize;
 

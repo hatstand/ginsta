@@ -1,6 +1,6 @@
 use nom::{
-    Parser,
     number::{be_f64, be_i64, be_u64, le_f64, le_i64, le_u64},
+    Parser,
 };
 use std::env::args;
 

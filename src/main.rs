@@ -230,67 +230,69 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
-    let file_name = args().nth(1).expect("No file name given");
 
-    let mut file = std::fs::File::open(file_name).expect("Failed to open file");
-    file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1))
-        .expect("Failed to seek");
+    let file_names = args().skip(1);
+    let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
+    for file_name in file_names {
+        let mut file = std::fs::File::open(file_name).expect("Failed to open file");
+        file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1))
+            .expect("Failed to seek");
 
-    let mut buffer = [0; HEADER_SIZE as usize];
-    let res = file.read(&mut buffer).expect("Failed to read");
-    assert_eq!(res as i64, HEADER_SIZE);
+        let mut buffer = [0; HEADER_SIZE as usize];
+        let res = file.read(&mut buffer).expect("Failed to read");
+        assert_eq!(res as i64, HEADER_SIZE);
 
-    assert_eq!(file.metadata()?.len(), file.stream_position()?);
+        assert_eq!(file.metadata()?.len(), file.stream_position()?);
 
-    let (_, header) = header_parser(&buffer).expect("Failed to parse header");
-    debug!("{:?}", header);
+        let (_, header) = header_parser(&buffer).expect("Failed to parse header");
+        debug!("{:?}", header);
 
-    let metadata_pos = file.metadata()?.len() as u64 - header.metadata_size as u64;
+        let metadata_pos = file.metadata()?.len() as u64 - header.metadata_size as u64;
 
-    // Read frames one at a time backwards from just before the header/trailer.
-    file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1 + FRAME_HEADER_SIZE))
-        .expect("Failed to seek");
+        // Read frames one at a time backwards from just before the header/trailer.
+        file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1 + FRAME_HEADER_SIZE))
+            .expect("Failed to seek");
 
-    // POSITION: just after the last frame.
+        // POSITION: just after the last frame.
 
-    file.seek_relative(FRAME_HEADER_SIZE * -1)?;
-    // POSITION: just before the frame's header/trailer.
+        file.seek_relative(FRAME_HEADER_SIZE * -1)?;
+        // POSITION: just before the frame's header/trailer.
 
-    // Read frame header.
-    let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
-    file.read_exact(&mut frame_header_buf)
-        .expect("Failed to read frame header");
-    // POSITION: just after the frame.
-    let (_, frame_trailer) =
-        frame_trailer(&frame_header_buf).expect("Failed to parse frame header");
-    assert_eq!(frame_trailer.frame_type, FrameType::Index);
-    file.seek_relative(((frame_trailer.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
-    debug!("{:?}", frame_trailer);
+        // Read frame header.
+        let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
+        file.read_exact(&mut frame_header_buf)
+            .expect("Failed to read frame header");
+        // POSITION: just after the frame.
+        let (_, frame_trailer) =
+            frame_trailer(&frame_header_buf).expect("Failed to parse frame header");
+        assert_eq!(frame_trailer.frame_type, FrameType::Index);
+        file.seek_relative(((frame_trailer.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
+        debug!("{:?}", frame_trailer);
 
-    // POSITION: just before the frame's data.
-    let frame_buf = &mut vec![0; frame_trailer.frame_size as usize];
-    file.read_exact(frame_buf)?;
+        // POSITION: just before the frame's data.
+        let frame_buf = &mut vec![0; frame_trailer.frame_size as usize];
+        file.read_exact(frame_buf)?;
 
-    let (_, index_frame) = parse_index_frame(frame_buf).expect("Failed to parse index frame");
+        let (_, index_frame) = parse_index_frame(frame_buf).expect("Failed to parse index frame");
 
-    for frame in index_frame.frames {
-        match frame.frame_type {
-            FrameType::Gps => {
-                let file_offset = metadata_pos + frame.frame_offset as u64;
-                file.seek(std::io::SeekFrom::Start(file_offset))?;
+        for frame in index_frame.frames {
+            match frame.frame_type {
+                FrameType::Gps => {
+                    let file_offset = metadata_pos + frame.frame_offset as u64;
+                    file.seek(std::io::SeekFrom::Start(file_offset))?;
 
-                let gps_frame_buf = &mut vec![0; frame.frame_size as usize];
-                file.read_exact(gps_frame_buf)?;
+                    let gps_frame_buf = &mut vec![0; frame.frame_size as usize];
+                    file.read_exact(gps_frame_buf)?;
 
-                let (_, gps_frame) =
-                    parse_gps_frame(gps_frame_buf).expect("Failed to parse GPS frame");
+                    let (_, gps_frame) =
+                        parse_gps_frame(gps_frame_buf).expect("Failed to parse GPS frame");
 
-                let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
-                gps_frame.records.iter().for_each(|record| {
-                    csv_writer.serialize(record).expect("Failed to write CSV");
-                });
+                    gps_frame.records.iter().for_each(|record| {
+                        csv_writer.serialize(record).expect("Failed to write CSV");
+                    });
+                }
+                _ => debug!("Other frame"),
             }
-            _ => debug!("Other frame"),
         }
     }
 
