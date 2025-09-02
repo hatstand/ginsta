@@ -1,3 +1,11 @@
+# Insta360 GPS Activity Stats
+
+The Insta360 app on iPhone supports recording live GPS tracks independently of a camera.
+However, no export functionality is provided other than using them in a video overlay when editing.
+
+Fortunately, the data is available by connecting the iPhone to a Mac and copying the `RecoderFiles` directory.
+GPS tracks are available in the subdirectory `insgps`.
+
 # insgps Format
 
 The `insgps` format consists of a sequence of GPS records, each with the following binary structure:
