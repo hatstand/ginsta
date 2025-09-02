@@ -170,7 +170,7 @@ fn parse_index_frame(frame: &[u8]) -> IResult<&[u8], IndexFrame> {
 }
 
 #[derive(Debug)]
-struct GpsFrame {
+struct GpsRecord {
     timestamp: u64,
     latitude: f64,
     northsouth: char,
@@ -181,7 +181,7 @@ struct GpsFrame {
     altitude: f64,
 }
 
-fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
+fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
     let (rest, timestamp) = le_u64().parse(frame)?;
     let (rest, _) = le_u16().parse(rest)?;
     let (rest, _) = take(1usize).parse(rest)?;
@@ -194,7 +194,7 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
     let (rest, altitude) = le_f64().parse(rest)?;
     Ok((
         rest,
-        GpsFrame {
+        GpsRecord {
             timestamp,
             latitude,
             northsouth: latitude_ns as char,
@@ -205,6 +205,17 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
             altitude,
         },
     ))
+}
+
+#[derive(Debug)]
+struct GpsFrame {
+    records: Vec<GpsRecord>,
+}
+
+fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
+    let (rest, records) = many_till(parse_gps_record, eof).parse(frame)?;
+    assert_eq!(0, rest.len());
+    Ok((rest, GpsFrame { records: records.0 }))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
