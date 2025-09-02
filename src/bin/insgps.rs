@@ -92,3 +92,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_gps_record() {
+        let data = include_bytes!("../testdata/Gps_1752824363158.insgps");
+        let (_, records) = parse_gps_records(data).expect("Failed to parse GPS records");
+        assert_eq!(records.len(), 14915);
+
+        let record = records.first().unwrap();
+        assert_eq!(record.timestamp, 1752824362);
+        assert_eq!(record.latitude, 49.25853492931603);
+        assert_eq!(record.longitude, 4.03079459928793);
+        assert_eq!(record.speed, 0.0);
+        assert_eq!(record.track, 335.23572083279436);
+        assert_eq!(record.altitude, 86.40542984008789);
+    }
+}

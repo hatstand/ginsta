@@ -1,10 +1,6 @@
 use nom::{
-    bytes::{tag, take},
-    character::one_of,
-    combinator::eof,
-    multi::many_till,
-    number::{be_f64, be_i64, be_u64, le_f64, le_i32, le_i64, le_u16, le_u32, le_u64},
-    IResult, Parser,
+    Parser,
+    number::{be_f64, be_i64, be_u64, le_f64, le_i64, le_u64},
 };
 use std::env::args;
 
