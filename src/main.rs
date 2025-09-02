@@ -39,17 +39,15 @@ struct TrailerMetadata {
 }
 
 fn parse_trailer_metadata(data: &[u8]) -> IResult<&[u8], TrailerMetadata> {
-    let (rest, id) = le_u16().parse(data)?;
-    let (rest, size) = le_u32().parse(rest)?;
+    let mut parser = (le_u16(), le_u32());
+    let (rest, (id, size)) = parser.parse(data)?;
 
     Ok((rest, TrailerMetadata { id, size }))
 }
 
 fn header_parser(header: &[u8]) -> IResult<&[u8], Trailer> {
-    let (rest, metadata) = count(parse_trailer_metadata, 7).parse(header)?;
-    let (rest, version_num) = le_i32().parse(rest)?;
-    let (rest, signature) = tag(SIGNATURE).parse(rest)?;
-    assert_eq!(0, rest.len());
+    let mut parser = (count(parse_trailer_metadata, 7), le_i32(), tag(SIGNATURE));
+    let (rest, (metadata, version_num, signature)) = parser.parse(header)?;
 
     let metadata_size: u32 = metadata.last().unwrap().size;
 
@@ -112,11 +110,8 @@ enum Frame {
 }
 
 fn frame_trailer(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
-    let (rest, frame_ver) = take(1 as usize).parse(frame)?;
-    let (rest, frame_type_code) = take(1 as usize).parse(rest)?;
-    let (rest, frame_size) = le_i32().parse(rest)?;
-
-    assert_eq!(0, rest.len());
+    let mut parser = (take(1usize), take(1usize), le_i32());
+    let (rest, (frame_ver, frame_type_code, frame_size)) = parser.parse(frame)?;
 
     let raw_frame_type = frame_type_code[0];
     if raw_frame_type != 0 {
