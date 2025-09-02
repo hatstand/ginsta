@@ -6,8 +6,9 @@ use std::{
 use nom::{
     IResult, Parser,
     bytes::{complete::tag, take},
-    multi::count,
-    number::{le_i16, le_i32, le_u32},
+    combinator::eof,
+    multi::{count, many_till},
+    number::{le_i16, le_i32, le_u16, le_u32},
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -23,19 +24,19 @@ const SIGNATURE: &[u8] = &[
 #[derive(Debug)]
 struct Trailer {
     version_num: i32,
-    metadata_size: i32,
     signature: Vec<u8>,
     metadata: Vec<TrailerMetadata>,
+    metadata_size: u32,
 }
 
 #[derive(Debug)]
 struct TrailerMetadata {
-    id: i16,
+    id: u16,
     size: u32,
 }
 
 fn parse_trailer_metadata(data: &[u8]) -> IResult<&[u8], TrailerMetadata> {
-    let (rest, id) = le_i16().parse(data)?;
+    let (rest, id) = le_u16().parse(data)?;
     let (rest, size) = le_u32().parse(rest)?;
 
     Ok((rest, TrailerMetadata { id, size }))
@@ -47,13 +48,15 @@ fn header_parser(header: &[u8]) -> IResult<&[u8], Trailer> {
     let (rest, signature) = tag(SIGNATURE).parse(rest)?;
     assert_eq!(0, rest.len());
 
+    let metadata_size: u32 = metadata.last().unwrap().size;
+
     Ok((
         rest,
         Trailer {
-            metadata_size: 1,
             version_num,
             signature: signature.to_vec(),
             metadata,
+            metadata_size,
         },
     ))
 }
@@ -61,7 +64,7 @@ fn header_parser(header: &[u8]) -> IResult<&[u8], Trailer> {
 const FRAME_HEADER_SIZE: i64 = 6;
 
 #[repr(i8)]
-#[derive(FromPrimitive, Debug)]
+#[derive(FromPrimitive, Debug, PartialEq)]
 enum FrameType {
     Raw = -1,
     Index = 0,
@@ -105,18 +108,23 @@ enum Frame {
     Index(IndexFrame),
 }
 
-fn frame_header(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
+fn frame_trailer(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
     let (rest, frame_ver) = take(1 as usize).parse(frame)?;
     let (rest, frame_type_code) = take(1 as usize).parse(rest)?;
     let (rest, frame_size) = le_i32().parse(rest)?;
 
     assert_eq!(0, rest.len());
 
+    let raw_frame_type = frame_type_code[0];
+    if raw_frame_type != 0 {
+        println!("Frame type code: {}", raw_frame_type);
+    }
+
     Ok((
         rest,
         FrameTrailer {
             frame_version: frame_ver[0],
-            frame_type: FrameType::from_u8(frame_type_code[0]).unwrap(),
+            frame_type: FrameType::from_u8(frame_type_code[0]).unwrap_or(FrameType::Raw),
             frame_size,
         },
     ))
@@ -124,7 +132,6 @@ fn frame_header(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
 
 #[derive(Debug)]
 struct IndexFrame {
-    header: FrameTrailer,
     frames: Vec<IndexFrameTrailer>,
 }
 
@@ -132,8 +139,34 @@ struct IndexFrame {
 struct IndexFrameTrailer {
     frame_version: u8,
     frame_type: FrameType,
-    frame_size: i32,
-    frame_offset: i64,
+    frame_size: u32,
+    frame_offset: u32, // Offset from metadata position.
+}
+
+fn parse_index(input: &[u8]) -> IResult<&[u8], IndexFrameTrailer> {
+    let (rest, frame_type) = take(1 as usize).parse(input)?;
+    let (rest, version) = take(1 as usize).parse(rest)?;
+    let (rest, size) = le_u32().parse(rest)?;
+    let (rest, offset) = le_u32().parse(rest)?;
+    Ok((
+        rest,
+        IndexFrameTrailer {
+            frame_version: version[0],
+            frame_type: FrameType::from_u8(frame_type[0]).unwrap_or(FrameType::Raw),
+            frame_size: size,
+            frame_offset: offset,
+        },
+    ))
+}
+
+fn parse_index_frame(frame: &[u8]) -> IResult<&[u8], IndexFrame> {
+    let (rest, index_frames) = many_till(parse_index, eof).parse(frame)?;
+    Ok((
+        rest,
+        IndexFrame {
+            frames: index_frames.0,
+        },
+    ))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -159,36 +192,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Metadata at: {}", metadata_pos);
 
     // Read frames one at a time backwards from just before the header/trailer.
-    file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1))
+    file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1 + FRAME_HEADER_SIZE))
         .expect("Failed to seek");
 
     // POSITION: just after the last frame.
 
-    const MAX_FRAMES: i64 = 20;
-    let mut frames_read = 0;
-    while file.stream_position()? > metadata_pos && frames_read < MAX_FRAMES {
-        file.seek_relative(FRAME_HEADER_SIZE * -1)?;
-        // POSITION: just before the frame's header/trailer.
+    file.seek_relative(FRAME_HEADER_SIZE * -1)?;
+    // POSITION: just before the frame's header/trailer.
 
-        // Read frame header.
-        let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
-        file.read_exact(&mut frame_header_buf)
-            .expect("Failed to read frame header");
-        // POSITION: just after the frame.
-        let (_, frame_header) =
-            frame_header(&frame_header_buf).expect("Failed to parse frame header");
-        println!("{:?}", frame_header);
+    // Read frame header.
+    let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
+    file.read_exact(&mut frame_header_buf)
+        .expect("Failed to read frame header");
+    // POSITION: just after the frame.
+    let (_, frame_trailer) =
+        frame_trailer(&frame_header_buf).expect("Failed to parse frame header");
+    assert_eq!(frame_trailer.frame_type, FrameType::Index);
+    file.seek_relative(((frame_trailer.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
+    println!("{:?}", frame_trailer);
 
-        file.seek_relative(((frame_header.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
-        // POSITION: just before the frame's data.
-        let frame_buf = &mut vec![0; frame_header.frame_size as usize];
-        file.read_exact(frame_buf)?;
-        // POSITION: just after the frame's data.
-        file.seek_relative(frame_header.frame_size as i64 * -1)?;
-        // POSITION: Just before the current frame.
+    // POSITION: just before the frame's data.
+    let frame_buf = &mut vec![0; frame_trailer.frame_size as usize];
+    file.read_exact(frame_buf)?;
 
-        frames_read += 1;
-    }
+    let index_frame = parse_index_frame(frame_buf)
+        .expect("Failed to parse index frame")
+        .1;
+    println!("Index frame: {:#?}", index_frame);
+
+    // POSITION: just after the frame's data.
+    file.seek_relative(frame_trailer.frame_size as i64 * -1)?;
+    // POSITION: Just before the current frame.
 
     Ok(())
 }
