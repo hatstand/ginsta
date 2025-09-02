@@ -1,39 +1,59 @@
-mod reverse_file_reader;
 use std::{
     env::args,
     io::{Read, Seek},
 };
 
-use nom::{IResult, Parser, bytes::take, character::char, number::le_i32};
+use nom::{
+    IResult, Parser,
+    bytes::{complete::tag, take},
+    multi::count,
+    number::{le_i16, le_i32, le_u32},
+};
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
 
-const HEADER_SIZE: i64 = 72;
+const HEADER_SIZE: i64 = 78;
 const SIGNATURE_SIZE: i64 = 32;
 
+const SIGNATURE: &[u8] = &[
+    0x38, 0x64, 0x62, 0x34, 0x32, 0x64, 0x36, 0x39, 0x34, 0x63, 0x63, 0x63, 0x34, 0x31, 0x38, 0x37,
+    0x39, 0x30, 0x65, 0x64, 0x66, 0x66, 0x34, 0x33, 0x39, 0x66, 0x65, 0x30, 0x32, 0x36, 0x62, 0x66,
+];
+
 #[derive(Debug)]
-struct Header {
+struct Trailer {
     version_num: i32,
     metadata_size: i32,
     signature: Vec<u8>,
-    unknown: Vec<u8>,
+    metadata: Vec<TrailerMetadata>,
 }
 
-fn header_parser(header: &[u8]) -> IResult<&[u8], Header> {
-    let (rest, unknown) = take(32 as usize).parse(header)?;
-    let (rest, metadata_size) = le_i32().parse(rest)?;
-    let (rest, version_num) = le_i32().parse(rest)?;
-    let (rest, signature) = take(SIGNATURE_SIZE as usize).parse(rest)?;
+#[derive(Debug)]
+struct TrailerMetadata {
+    id: i16,
+    size: u32,
+}
 
+fn parse_trailer_metadata(data: &[u8]) -> IResult<&[u8], TrailerMetadata> {
+    let (rest, id) = le_i16().parse(data)?;
+    let (rest, size) = le_u32().parse(rest)?;
+
+    Ok((rest, TrailerMetadata { id, size }))
+}
+
+fn header_parser(header: &[u8]) -> IResult<&[u8], Trailer> {
+    let (rest, metadata) = count(parse_trailer_metadata, 7).parse(header)?;
+    let (rest, version_num) = le_i32().parse(rest)?;
+    let (rest, signature) = tag(SIGNATURE).parse(rest)?;
     assert_eq!(0, rest.len());
 
     Ok((
         rest,
-        Header {
-            unknown: unknown.to_vec(),
-            metadata_size,
+        Trailer {
+            metadata_size: 1,
             version_num,
             signature: signature.to_vec(),
+            metadata,
         },
     ))
 }
@@ -72,7 +92,7 @@ enum FrameType {
 }
 
 #[derive(Debug)]
-struct FrameHeader {
+struct FrameTrailer {
     frame_version: u8,
     frame_type: FrameType,
     frame_size: i32,
@@ -85,7 +105,7 @@ enum Frame {
     Index(IndexFrame),
 }
 
-fn frame_header(frame: &[u8]) -> IResult<&[u8], FrameHeader> {
+fn frame_header(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
     let (rest, frame_ver) = take(1 as usize).parse(frame)?;
     let (rest, frame_type_code) = take(1 as usize).parse(rest)?;
     let (rest, frame_size) = le_i32().parse(rest)?;
@@ -94,7 +114,7 @@ fn frame_header(frame: &[u8]) -> IResult<&[u8], FrameHeader> {
 
     Ok((
         rest,
-        FrameHeader {
+        FrameTrailer {
             frame_version: frame_ver[0],
             frame_type: FrameType::from_u8(frame_type_code[0]).unwrap(),
             frame_size,
@@ -104,12 +124,12 @@ fn frame_header(frame: &[u8]) -> IResult<&[u8], FrameHeader> {
 
 #[derive(Debug)]
 struct IndexFrame {
-    header: FrameHeader,
-    frames: Vec<IndexFrameHeader>,
+    header: FrameTrailer,
+    frames: Vec<IndexFrameTrailer>,
 }
 
 #[derive(Debug)]
-struct IndexFrameHeader {
+struct IndexFrameTrailer {
     frame_version: u8,
     frame_type: FrameType,
     frame_size: i32,
@@ -128,6 +148,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let res = file.read(&mut buffer).expect("Failed to read");
     assert_eq!(res as i64, HEADER_SIZE);
 
+    assert_eq!(file.metadata()?.len(), file.stream_position()?);
+
+    println!("header: {:#x?}", buffer);
+
     let (_, header) = header_parser(&buffer).expect("Failed to parse header");
     println!("{:?}", header);
 
@@ -138,39 +162,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1))
         .expect("Failed to seek");
 
-    file.seek_relative(FRAME_HEADER_SIZE * -1)?;
+    // POSITION: just after the last frame.
 
-    // Parse one frame?
-    let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
-    file.read_exact(&mut frame_header_buf)
-        .expect("Failed to read frame header");
-    let (_, frame_header) = frame_header(&frame_header_buf).expect("Failed to parse frame header");
-    println!("{:?}", frame_header);
+    const MAX_FRAMES: i64 = 20;
+    let mut frames_read = 0;
+    while file.stream_position()? > metadata_pos && frames_read < MAX_FRAMES {
+        file.seek_relative(FRAME_HEADER_SIZE * -1)?;
+        // POSITION: just before the frame's header/trailer.
 
-    file.seek_relative(((frame_header.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
-    let index_frame_buf = &mut vec![0; frame_header.frame_size as usize];
-    file.read_exact(index_frame_buf)?;
+        // Read frame header.
+        let mut frame_header_buf = [0; FRAME_HEADER_SIZE as usize];
+        file.read_exact(&mut frame_header_buf)
+            .expect("Failed to read frame header");
+        // POSITION: just after the frame.
+        let (_, frame_header) =
+            frame_header(&frame_header_buf).expect("Failed to parse frame header");
+        println!("{:?}", frame_header);
 
-    assert_eq!(index_frame_buf.len() % INDEX_FRAME_HEADER_SIZE as usize, 0);
-    let index_frames = index_frame_buf
-        .chunks_exact(INDEX_FRAME_HEADER_SIZE as usize)
-        .map(|chunk| {
-            let (rest, frame_version) = take::<usize, &[u8], ()>(1 as usize).parse(chunk).unwrap();
-            let (rest, frame_type_code) = take::<usize, &[u8], ()>(1 as usize).parse(rest).unwrap();
-            let (rest, frame_size) = le_i32::<&[u8], ()>().parse(rest).unwrap();
-            let (rest, frame_offset) = le_i32::<&[u8], ()>().parse(rest).unwrap();
+        file.seek_relative(((frame_header.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
+        // POSITION: just before the frame's data.
+        let frame_buf = &mut vec![0; frame_header.frame_size as usize];
+        file.read_exact(frame_buf)?;
+        // POSITION: just after the frame's data.
+        file.seek_relative(frame_header.frame_size as i64 * -1)?;
+        // POSITION: Just before the current frame.
 
-            assert_eq!(0, rest.len());
-
-            IndexFrameHeader {
-                frame_version: frame_version[0],
-                frame_type: FrameType::from_u8(frame_type_code[0]).unwrap(),
-                frame_size,
-                frame_offset: frame_offset as i64 + metadata_pos as i64,
-            }
-        })
-        .collect::<Vec<_>>();
-    println!("Index frames: {:#?}", index_frames);
+        frames_read += 1;
+    }
 
     Ok(())
 }
