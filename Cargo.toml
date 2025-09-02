@@ -12,6 +12,7 @@ memmap = "0.7.0"
 nom = "8.0.0"
 num-derive = "0.4.2"
 num-traits = "0.2.19"
+prost = "0.14.1"
 serde = { version = "1.0.219", features = ["derive"] }
 
 [[bin]]
@@ -19,3 +20,6 @@ name = "insgps"
 
 [[bin]]
 name = "hexnumber"
+
+[build-dependencies]
+prost-build = "0.14.1"

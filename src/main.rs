@@ -1,21 +1,25 @@
-use std::{
-    env::args,
-    io::{Read, Seek},
-};
+use std::env::args;
 
 use log::debug;
 use memmap::MmapOptions;
 use nom::{
+    IResult, Parser,
     bytes::{complete::tag, take},
     character::complete::one_of,
     combinator::eof,
     multi::{count, many_till},
     number::{le_f64, le_i32, le_u16, le_u32, le_u64},
-    IResult, Parser,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
+use prost::Message;
 use serde::Serialize;
+
+pub mod insvtools {
+    pub mod frames {
+        include!(concat!(env!("OUT_DIR"), "/insvtools.frames.rs"));
+    }
+}
 
 const HEADER_SIZE: i64 = 78;
 
@@ -229,6 +233,16 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
     Ok((rest, GpsFrame { records: records.0 }))
 }
 
+#[derive(Debug)]
+struct InfoFrame {
+    extra_metadata: insvtools::frames::ExtraMetadata,
+}
+
+fn parse_info_frame(frame: &[u8]) -> IResult<&[u8], InfoFrame> {
+    let extra_metadata = insvtools::frames::ExtraMetadata::decode(frame).unwrap();
+    Ok((frame, InfoFrame { extra_metadata }))
+}
+
 /*
 * Layout:
 * |....{Metadata:[Frame{FrameTrailer}]}Trailer{MetadataPosition}|
@@ -282,6 +296,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     gps_frame.records.iter().for_each(|record| {
                         csv_writer.serialize(record).expect("Failed to write CSV");
                     });
+                }
+                FrameType::Info => {
+                    if frame.frame_version != 1 {
+                        debug!("Unknown info frame version: {}", frame.frame_version);
+                        continue;
+                    }
+
+                    let file_offset = (metadata_pos + frame.frame_offset as u64) as usize;
+                    let info_frame_buf =
+                        &mmap[file_offset..file_offset + frame.frame_size as usize];
+
+                    let (_, info_frame) =
+                        parse_info_frame(info_frame_buf).expect("Failed to parse info frame");
+                    debug!("Info frame: {:?}", info_frame);
                 }
                 _ => debug!("Other frame"),
             }
