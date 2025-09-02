@@ -8,7 +8,7 @@ use nom::{
     bytes::{complete::tag, take},
     combinator::eof,
     multi::{count, many_till},
-    number::{le_i16, le_i32, le_u16, le_u32},
+    number::{le_f64, le_i32, le_u8, le_u16, le_u32, le_u64},
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -169,6 +169,35 @@ fn parse_index_frame(frame: &[u8]) -> IResult<&[u8], IndexFrame> {
     ))
 }
 
+#[derive(Debug)]
+struct GpsFrame {
+    timestamp: u64,
+    latitude: f64,
+    northsouth: char,
+    longitude: f64,
+    eastwest: char,
+}
+
+fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
+    let (rest, timestamp) = le_u64().parse(frame)?;
+    let (rest, _) = le_u16().parse(rest)?;
+    let (rest, _) = take(1usize).parse(rest)?;
+    let (rest, latitude) = le_f64().parse(rest)?;
+    let (rest, latitude_ns) = le_u8().parse(rest)?;
+    let (rest, longitude) = le_f64().parse(rest)?;
+    let (rest, longitude_ew) = le_u8().parse(rest)?;
+    Ok((
+        rest,
+        GpsFrame {
+            timestamp,
+            latitude,
+            northsouth: latitude_ns as char,
+            longitude,
+            eastwest: longitude_ew as char,
+        },
+    ))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_name = args().nth(1).expect("No file name given");
     println!("File name: {}", file_name);
@@ -215,14 +244,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let frame_buf = &mut vec![0; frame_trailer.frame_size as usize];
     file.read_exact(frame_buf)?;
 
-    let index_frame = parse_index_frame(frame_buf)
-        .expect("Failed to parse index frame")
-        .1;
-    println!("Index frame: {:#?}", index_frame);
+    let (_, index_frame) = parse_index_frame(frame_buf).expect("Failed to parse index frame");
 
-    // POSITION: just after the frame's data.
-    file.seek_relative(frame_trailer.frame_size as i64 * -1)?;
-    // POSITION: Just before the current frame.
+    for frame in index_frame.frames {
+        // println!("Frame in index: {:#?}", frame);
+        match frame.frame_type {
+            FrameType::Gps => {
+                let file_offset = metadata_pos + frame.frame_offset as u64;
+                println!("GPS frame at: {}", file_offset);
+                file.seek(std::io::SeekFrom::Start(file_offset))?;
+
+                let gps_frame_buf = &mut vec![0; frame.frame_size as usize];
+                file.read_exact(gps_frame_buf)?;
+
+                let (_, gps_frame) =
+                    parse_gps_frame(gps_frame_buf).expect("Failed to parse GPS frame");
+                println!("GPS: {:?}", gps_frame);
+            }
+            _ => println!("Other frame"),
+        }
+    }
 
     Ok(())
 }
