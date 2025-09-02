@@ -3,6 +3,7 @@ use std::{
     io::{Read, Seek},
 };
 
+use log::{Level, debug, error, info, log_enabled};
 use nom::{
     IResult, Parser,
     bytes::{complete::tag, take},
@@ -13,6 +14,7 @@ use nom::{
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
+use serde::Serialize;
 
 const HEADER_SIZE: i64 = 78;
 const SIGNATURE_SIZE: i64 = 32;
@@ -118,7 +120,7 @@ fn frame_trailer(frame: &[u8]) -> IResult<&[u8], FrameTrailer> {
 
     let raw_frame_type = frame_type_code[0];
     if raw_frame_type != 0 {
-        println!("Frame type code: {}", raw_frame_type);
+        debug!("Frame type code: {}", raw_frame_type);
     }
 
     Ok((
@@ -170,13 +172,11 @@ fn parse_index_frame(frame: &[u8]) -> IResult<&[u8], IndexFrame> {
     ))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct GpsRecord {
     timestamp: u64,
     latitude: f64,
-    northsouth: char,
     longitude: f64,
-    eastwest: char,
     speed: f64,
     track: f64,
     altitude: f64,
@@ -212,10 +212,16 @@ fn parse_gps_record(frame: &[u8]) -> IResult<&[u8], GpsRecord> {
         rest,
         GpsRecord {
             timestamp,
-            latitude,
-            northsouth,
-            longitude,
-            eastwest,
+            latitude: if northsouth == 'S' {
+                -latitude
+            } else {
+                latitude
+            },
+            longitude: if eastwest == 'W' {
+                -longitude
+            } else {
+                longitude
+            },
             speed,
             track,
             altitude,
@@ -235,8 +241,8 @@ fn parse_gps_frame(frame: &[u8]) -> IResult<&[u8], GpsFrame> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    env_logger::init();
     let file_name = args().nth(1).expect("No file name given");
-    println!("File name: {}", file_name);
 
     let mut file = std::fs::File::open(file_name).expect("Failed to open file");
     file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1))
@@ -248,13 +254,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     assert_eq!(file.metadata()?.len(), file.stream_position()?);
 
-    println!("header: {:#x?}", buffer);
-
     let (_, header) = header_parser(&buffer).expect("Failed to parse header");
-    println!("{:?}", header);
+    debug!("{:?}", header);
 
     let metadata_pos = file.metadata()?.len() as u64 - header.metadata_size as u64;
-    println!("Metadata at: {}", metadata_pos);
 
     // Read frames one at a time backwards from just before the header/trailer.
     file.seek(std::io::SeekFrom::End(HEADER_SIZE * -1 + FRAME_HEADER_SIZE))
@@ -274,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         frame_trailer(&frame_header_buf).expect("Failed to parse frame header");
     assert_eq!(frame_trailer.frame_type, FrameType::Index);
     file.seek_relative(((frame_trailer.frame_size + FRAME_HEADER_SIZE as i32) * -1).into())?;
-    println!("{:?}", frame_trailer);
+    debug!("{:?}", frame_trailer);
 
     // POSITION: just before the frame's data.
     let frame_buf = &mut vec![0; frame_trailer.frame_size as usize];
@@ -283,11 +286,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_, index_frame) = parse_index_frame(frame_buf).expect("Failed to parse index frame");
 
     for frame in index_frame.frames {
-        // println!("Frame in index: {:#?}", frame);
         match frame.frame_type {
             FrameType::Gps => {
                 let file_offset = metadata_pos + frame.frame_offset as u64;
-                println!("GPS frame at: {}", file_offset);
                 file.seek(std::io::SeekFrom::Start(file_offset))?;
 
                 let gps_frame_buf = &mut vec![0; frame.frame_size as usize];
@@ -295,9 +296,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let (_, gps_frame) =
                     parse_gps_frame(gps_frame_buf).expect("Failed to parse GPS frame");
-                println!("GPS: {:?}", gps_frame);
+
+                let mut csv_writer = csv::Writer::from_writer(std::io::stdout());
+                gps_frame.records.iter().for_each(|record| {
+                    csv_writer.serialize(record).expect("Failed to write CSV");
+                });
             }
-            _ => println!("Other frame"),
+            _ => debug!("Other frame"),
         }
     }
 
