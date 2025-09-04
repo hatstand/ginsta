@@ -8,7 +8,7 @@ use nom::{
     character::complete::one_of,
     combinator::eof,
     multi::{count, many_till},
-    number::{le_f64, le_i32, le_u16, le_u32, le_u64},
+    number::{le_f64, le_i16, le_i32, le_u16, le_u32, le_u64},
 };
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
@@ -243,6 +243,73 @@ fn parse_info_frame(frame: &[u8]) -> IResult<&[u8], InfoFrame> {
     Ok((frame, InfoFrame { extra_metadata }))
 }
 
+#[derive(Debug)]
+struct GyroRecord {
+    timestamp: u64,
+    payload: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct GyroFrame {
+    records: Vec<GyroRecord>,
+}
+
+fn parse_gyro_record(record: &[u8]) -> IResult<&[u8], GyroRecord> {
+    let timestamp = le_u64();
+    let payload = take(6 * 2usize);
+
+    let mut parser = (timestamp, payload);
+    let (rest, (timestamp, payload)) = parser.parse(record)?;
+
+    Ok((
+        rest,
+        GyroRecord {
+            timestamp,
+            payload: payload.to_vec(),
+        },
+    ))
+}
+
+fn parse_gyro_frame(frame: &[u8]) -> IResult<&[u8], GyroFrame> {
+    let (rest, records) = many_till(parse_gyro_record, eof).parse(frame)?;
+    assert_eq!(0, rest.len());
+    Ok((rest, GyroFrame { records: records.0 }))
+}
+
+#[derive(Debug)]
+struct ExposureRecord {
+    timestamp: u64,
+    shutterspeed: f64,
+}
+
+#[derive(Debug)]
+struct ExposureFrame {
+    records: Vec<ExposureRecord>,
+}
+
+fn parse_exposure_record(frame: &[u8]) -> IResult<&[u8], ExposureRecord> {
+    let timestamp = le_u64();
+    let shutterspeed = le_f64();
+
+    let mut parser = (timestamp, shutterspeed);
+    let (rest, (timestamp, shutterspeed)) = parser.parse(frame)?;
+
+    Ok((
+        rest,
+        ExposureRecord {
+            timestamp,
+            shutterspeed,
+        },
+    ))
+}
+
+fn parse_exposure_frame(frame: &[u8]) -> IResult<&[u8], ExposureFrame> {
+    assert_eq!(frame.len() % 16, 0);
+    let (rest, records) = many_till(parse_exposure_record, eof).parse(frame)?;
+    assert_eq!(0, rest.len());
+    Ok((rest, ExposureFrame { records: records.0 }))
+}
+
 /*
 * Layout:
 * |....{Metadata:[Frame{FrameTrailer}]}Trailer{MetadataPosition}|
@@ -311,7 +378,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         parse_info_frame(info_frame_buf).expect("Failed to parse info frame");
                     debug!("Info frame: {:?}", info_frame);
                 }
-                _ => debug!("Other frame"),
+                FrameType::Gyro => {
+                    debug!("Gyro frame: {:?}", frame);
+                    let file_offset = (metadata_pos + frame.frame_offset as u64) as usize;
+                    let gyro_frame_buf =
+                        &mmap[file_offset..file_offset + frame.frame_size as usize];
+
+                    let (_, gyro_frame) =
+                        parse_gyro_frame(gyro_frame_buf).expect("Failed to parse gyro frame");
+                    debug!(
+                        "gyro frame: {:?} {:?} {:?}",
+                        gyro_frame.records[0], gyro_frame.records[1], gyro_frame.records[2],
+                    );
+                }
+                FrameType::Exposure => {
+                    let file_offset = (metadata_pos + frame.frame_offset as u64) as usize;
+                    let exposure_frame_buf =
+                        &mmap[file_offset..file_offset + frame.frame_size as usize];
+
+                    let (_, exposure_frame) = parse_exposure_frame(exposure_frame_buf)
+                        .expect("Failed to parse exposure frame");
+                    debug!(
+                        "Exposure frame: {:?} {:?}",
+                        exposure_frame.records[0], exposure_frame.records[1]
+                    );
+                }
+                _ => debug!("Other frame {:?}", frame),
             }
         }
     }
